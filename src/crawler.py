@@ -10,8 +10,7 @@ from src.logger import logger
 
 TEMP_FILE_PATH = "./temp_problemset.txt"
 CONFIG_PATH = "./configuration/config.json"
-LIMIT = 40
-PAGE_TIME = 3
+PAGE_TIME = 5
 START_PAGE = 0
 
 
@@ -19,11 +18,12 @@ class Crawler:
     def __init__(self, args) -> None:
         with open(CONFIG_PATH, "r") as f:
             config = json.loads(f.read())
-            self.COOKIE = args.cookie if args.cookie else config['cookie']
+            self.LEETCODE_SESSION = args.LEETCODE_SESSION if args.LEETCODE_SESSION else config['LEETCODE_SESSION']
+            self.CSRF_TOKEN = args.CSRF_TOKEN if args.CSRF_TOKEN else config['CSRF_TOKEN']
             self.OUTPUT_DIR = args.output if args.output else config['output_dir']
             self.TIME_CONTROL = 3600 * 24 * \
                 (args.day if args.day else config['day'])
-            self.OVERWRITE = args.overwrite
+            self.OVERWRITE = True
         self.c = 0
         self.visited = {}
         self.problems_to_be_reprocessed = []
@@ -32,7 +32,8 @@ class Crawler:
             os.makedirs(self.OUTPUT_DIR)
 
         self.lc = LeetcodeClient(
-            self.COOKIE,
+            self.LEETCODE_SESSION,
+            self.CSRF_TOKEN,
             logger=logger
         )
 
@@ -142,18 +143,18 @@ class Crawler:
             if not submission_list.get("has_next") or expired:
                 logger.info("No more submissions!")
                 break
-            page_num += LIMIT
+            page_num += 1
             time.sleep(PAGE_TIME)
         self.process_temporary_problems()
         self.write_temorary_file()
 
     def execute(self):
-        logger.info('Login')
-        self.lc.login()
+        # logger.info('Login')
+        # self.lc.login()
         logger.info('Start scrapping')
         self.scraping()
         logger.info('End scrapping \n')
-        gitPush(self.OUTPUT_DIR)
+        # gitPush(self.OUTPUT_DIR)
 
 
 if __name__ == '__main__':

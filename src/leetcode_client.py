@@ -9,7 +9,8 @@ class LeetcodeClient:
 
     def __init__(
             self,
-            cookie,
+            LEETCODE_SESSION,
+            CSRF_TOKEN,
             sleep_time=5,
             base_url='https://leetcode.cn/',
             logger=None) -> None:
@@ -18,40 +19,64 @@ class LeetcodeClient:
         self.logger = logger
 
         self.client = requests.session()
-        self.client.cookies.set('LEETCODE_SESSION', cookie)
+
+        # 设置 cookies
+        self.client.cookies.set('LEETCODE_SESSION', LEETCODE_SESSION)
+        self.client.cookies.set('csrftoken', CSRF_TOKEN)
+
         self.client.encoding = "utf-8"
 
         self.headers = {
             'Connection': 'keep-alive',
             'Content-Type': 'application/json',
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/33.0.1750.152 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
+            'X-CSRFToken': CSRF_TOKEN,  
+            'Referer': base_url
         }
 
     def login(self) -> None:
+        """验证硬编码的 cookies 是否有效"""
         ATTEMPT = 3
-        login_url = self.endpoint + self.LOGIN_PATH
-        login_header = self.headers
-        login_header['Referer'] = login_url
 
         for try_cnt in range(ATTEMPT):
-            self.client.get(login_url)
-            result = self.client.post(
-                login_url, headers=login_header)
+            try:
+                test_url = self.endpoint + "api/submissions/?offset=0&limit=1"
 
-            # result.url 判断是否真正登录成功
-            if result.ok and result.url == self.endpoint:
-                self.logger.info("Login successfully!")
-                return
-            self.logger.warning("Login failed, Wait till next round!")
+                self.logger.info(f"Testing authentication with: {test_url}")
+                result = self.client.get(test_url, headers=self.headers)
+
+                self.logger.info(f"Auth test response status: {result.status_code}")
+
+                if result.ok:
+                    try:
+                        data = result.json()
+                        self.logger.info("Authentication successful - cookies are valid!")
+                        self.logger.info(f"Response has submissions_dump: {'submissions_dump' in data}")
+                        return
+                    except json.JSONDecodeError:
+                        self.logger.error(f"Failed to parse response: {result.text[:500]}")
+                else:
+                    self.logger.warning(f"Request failed with status: {result.status_code}")
+                    self.logger.warning(f"Response: {result.text[:500]}")
+
+                    if result.status_code == 403:
+                        self.logger.error("403 Forbidden - CSRF token may be invalid")
+                        self.logger.error("Please get a fresh CSRF token from browser")
+                    elif result.status_code == 401:
+                        self.logger.error("401 Unauthorized - Session cookie may be expired")
+                        self.logger.error("Please get a fresh LEETCODE_SESSION from browser")
+
+            except Exception as e:
+                self.logger.error(f"Login verification failed with error: {e}")
+                import traceback
+                self.logger.error(traceback.format_exc())
+
             if try_cnt != ATTEMPT - 1:
+                self.logger.info(f"Retrying in {self.sleep_time} seconds...")
                 time.sleep(self.sleep_time)
 
-        self.logger.error(
-            "LoginError: Login failed, ensure your login credential is correct!"
-        )
-
-        raise Exception(
-            "LoginError: Login failed, ensure your login credential is correct!")
+        self.logger.error("All login attempts failed!")
+        raise Exception("LoginError: Cookie validation failed! Please update your LEETCODE_SESSION and CSRF token.")
 
     def downloadCode(self, submission) -> str:
         with open('query/query_download_submission', 'r') as f:
@@ -74,14 +99,66 @@ class LeetcodeClient:
         return submission_details
 
     def getSubmissionList(self, page_num):
+        limit = 5
+        offset = page_num * limit
+
         self.logger.info(
-            'Now scraping submissions list for page:{page_num}'.format(
-                page_num=page_num
-            )
+            f'Now scraping submissions list for page:{page_num} (offset={offset}, limit={limit})'
         )
-        submissions_url = "https://leetcode.cn/api/submissions/?offset={page_num}&limit=40".format(
-            page_num=page_num
-        )
-        submissions_list = self.client.get(
-            submissions_url, headers=self.headers)
-        return json.loads(submissions_list.text)
+
+        submissions_url = f"{self.endpoint}api/submissions/?offset={offset}&limit={limit}"
+
+        max_retries = 3
+        for retry in range(max_retries):
+            try:
+                response = self.client.get(submissions_url, headers=self.headers)
+
+                if not response.ok:
+                    self.logger.warning(f"Request failed with status {response.status_code}")
+                    self.logger.warning(f"Response: {response.text[:500]}")
+
+                    if response.status_code == 429:
+                        wait_time = (retry + 1) * self.sleep_time
+                        self.logger.info(f"Rate limited, waiting {wait_time} seconds...")
+                        time.sleep(wait_time)
+                        continue
+
+                result = response.json()
+
+                if "detail" in result:
+                    error_detail = result.get("detail", "Unknown error")
+                    self.logger.error(f"API error: {error_detail}")
+
+                    return {"submissions_dump": [], "has_next": False}
+
+
+                if "submissions_dump" not in result:
+                    self.logger.error(f"Unexpected response structure: {list(result.keys())}")
+                    self.logger.debug(f"Full response: {json.dumps(result, ensure_ascii=False)[:500]}")
+                    return {"submissions_dump": [], "has_next": False}
+
+
+                submission_count = len(result.get("submissions_dump", []))
+                self.logger.info(f"Successfully fetched {submission_count} submissions")
+
+                return result
+
+            except json.JSONDecodeError as e:
+                self.logger.error(f"Failed to parse JSON response: {e}")
+                self.logger.error(f"Response text: {response.text[:500]}")
+
+                if retry < max_retries - 1:
+                    time.sleep(self.sleep_time)
+                    continue
+
+            except Exception as e:
+                self.logger.error(f"Unexpected error: {e}")
+                import traceback
+                self.logger.error(traceback.format_exc())
+
+                if retry < max_retries - 1:
+                    time.sleep(self.sleep_time)
+                    continue
+
+        self.logger.error("All attempts to fetch submissions failed")
+        return {"submissions_dump": [], "has_next": False}
